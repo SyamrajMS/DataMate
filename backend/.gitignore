@@ -1,0 +1,23 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Environment variables
+.env
+
+# History audit log
+history.db
+
+# Scratch / inspection scripts
+_inspect_db.py
+
+# OS generated files
+.DS_Store
+Thumbs.db
