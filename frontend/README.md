@@ -1,4 +1,4 @@
-# Queryflow frontend
+# DataMate frontend
 
 ## Connect FastAPI
 

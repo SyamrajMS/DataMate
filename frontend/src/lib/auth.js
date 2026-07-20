@@ -1,4 +1,4 @@
-const SESSION_KEY = 'queryflow-session-v1';
+const SESSION_KEY = 'datamate-session-v1';
 
 export function getSession() {
   try {

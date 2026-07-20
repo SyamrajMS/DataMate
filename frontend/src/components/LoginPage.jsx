@@ -21,7 +21,7 @@ export default function LoginPage({ onSignIn }) {
   return (
     <main className="login-page">
       <section className="login-panel">
-        <div className="login-brand"><span className="brand-mark"><Sparkles size={17} /></span><span>queryflow</span></div>
+        <div className="login-brand"><span className="brand-mark"><Sparkles size={17} /></span><span>DataMate</span></div>
         <div className="login-content">
           <p className="login-eyebrow">WELCOME BACK</p>
           <h1>Make every data question count.</h1>
@@ -32,7 +32,7 @@ export default function LoginPage({ onSignIn }) {
       </section>
       <section className="login-form-panel">
         <div className="login-form-wrap">
-          <div className="login-form-heading"><h2>Sign in to Queryflow</h2><p>Use your workspace credentials to continue.</p></div>
+          <div className="login-form-heading"><h2>Sign in to DataMate</h2><p>Use your workspace credentials to continue.</p></div>
           <form className="login-form" onSubmit={submit} noValidate>
             <label><span>Work email</span><div className="login-field"><Mail size={17} /><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" placeholder="you@company.com" autoFocus /></div></label>
             <label><span>Password</span><div className="login-field"><LockKeyhole size={17} /><input type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" placeholder="Enter your password" /><button type="button" onClick={() => setShowPassword((current) => !current)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div></label>

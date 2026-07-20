@@ -35,7 +35,7 @@ function ChatWorkspace({ session, onSignOut }) {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isDark, setIsDark] = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 760);
   const [historySearch, setHistorySearch] = useState('');
   const endRef = useRef(null);
   const textareaRef = useRef(null);
@@ -157,7 +157,7 @@ function ChatWorkspace({ session, onSignOut }) {
     <div className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? 'sidebar--open' : ''}`}>
         <div className="sidebar-top">
-          <div className="brand"><span className="brand-mark"><Sparkles size={17} /></span><span>queryflow</span><button className="mobile-close icon-button" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar"><X size={18} /></button></div>
+          <div className="brand"><span className="brand-mark"><Sparkles size={17} /></span><span>DataMate</span><button className="mobile-close icon-button" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar"><X size={18} /></button></div>
           <button className="new-chat" onClick={startNewChat}><Plus size={17} /> New chat <kbd><Command size={11} /> K</kbd></button>
           <label className="history-search"><Search size={15} /><input value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} placeholder="Search chats" /></label>
         </div>
@@ -175,8 +175,8 @@ function ChatWorkspace({ session, onSignOut }) {
       </aside>
       {sidebarOpen && <button className="scrim" aria-label="Close menu" onClick={() => setSidebarOpen(false)} />}
 
-      <main className="main-panel">
-        <header className="topbar"><button className="icon-button menu-button" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar"><PanelLeft size={20} /></button><div className="topbar-title"><span>{activeConversation?.title ?? 'New chat'}</span><small>Queryflow analytics</small></div><div className="topbar-actions"><button className="theme-toggle" onClick={() => setIsDark((current) => !current)} aria-label="Toggle color mode">{isDark ? <Sun size={17} /> : <Moon size={17} />}</button><button className="topbar-new" onClick={startNewChat}><CirclePlus size={17} /><span>New chat</span></button></div></header>
+      <main className={`main-panel ${sidebarOpen ? '' : 'main-panel--expanded'}`}>
+        <header className="topbar"><button className="icon-button menu-button" onClick={() => setSidebarOpen(current => !current)} aria-label="Toggle sidebar"><PanelLeft size={20} /></button><div className="topbar-title"><span>{activeConversation?.title ?? 'New chat'}</span><small>DataMate analytics</small></div><div className="topbar-actions"><button className="theme-toggle" onClick={() => setIsDark((current) => !current)} aria-label="Toggle color mode">{isDark ? <Sun size={17} /> : <Moon size={17} />}</button><button className="topbar-new" onClick={startNewChat}><CirclePlus size={17} /><span>New chat</span></button></div></header>
         <div className="chat-scroller"><div className="conversation">
           {activeMessages.map((message, index) => <article className={`message message--${message.role} ${message.isError ? 'message--error' : ''}`} key={message.id}>
             {message.role === 'assistant' && <div className="assistant-avatar"><Sparkles size={15} /></div>}
@@ -188,9 +188,9 @@ function ChatWorkspace({ session, onSignOut }) {
         <div className="composer-wrap"><div className="composer-area">
           {activeMessages.length <= 1 && <div className="welcome-prompts"><p>Try asking about your data</p><div className="suggestions">{suggestions.map((suggestion) => <button key={suggestion} onClick={() => { setInput(suggestion); textareaRef.current?.focus(); }}><Sparkles size={13} />{suggestion}</button>)}</div></div>}
           <form className="composer" onSubmit={handleSubmit}>
-            <textarea ref={textareaRef} value={input} onChange={resizeTextarea} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleSubmit(); } }} placeholder="Message Queryflow…" rows="1" />
+            <textarea ref={textareaRef} value={input} onChange={resizeTextarea} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleSubmit(); } }} placeholder="Message DataMate…" rows="1" />
             <div className="composer-controls"><span>Shift + Enter for new line</span><button className="send-button" type="submit" disabled={!input.trim() || isLoading} aria-label="Send message"><ArrowUp size={19} /></button></div>
-          </form><p className="composer-note">Queryflow can make mistakes. Verify important business decisions.</p>
+          </form><p className="composer-note">DataMate can make mistakes. Verify important business decisions.</p>
         </div></div>
       </main>
     </div>

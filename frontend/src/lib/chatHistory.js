@@ -1,9 +1,9 @@
-const STORAGE_KEY = 'queryflow-conversations-v1';
+const STORAGE_KEY = 'datamate-conversations-v1';
 
 export const welcomeMessage = {
   id: 'welcome',
   role: 'assistant',
-  text: 'I’m Queryflow, your analytics copilot. Ask a question in plain language and I’ll turn the answer into a useful analysis.',
+  text: 'I’m DataMate, your analytics copilot. Ask a question in plain language and I’ll turn the answer into a useful analysis.',
 };
 
 export function createConversation() {
