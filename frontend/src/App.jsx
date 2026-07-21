@@ -6,9 +6,9 @@ import {
 import UIDispatcher from './components/UIDispatcher';
 import LoadingState from './components/LoadingState';
 import { getMockResponse, suggestions } from './lib/mockResponses';
-import { AnalyticsApiError, runAnalyticsQuery } from './lib/analyticsApi';
-import { createConversation, loadConversations, relativeGroup, saveConversations, titleFromQuery } from './lib/chatHistory';
-import { clearSession, createSession, getSession } from './lib/auth';
+import { ApiError, API } from './lib/api';
+import { createConversation, loadConversations, loadHistoryFromServer, relativeGroup, saveConversations, titleFromQuery } from './lib/chatHistory';
+import { clearSession, getSession, verifySession } from './lib/auth';
 import LoginPage from './components/LoginPage';
 
 function MessageActions({ text }) {
@@ -35,11 +35,12 @@ function ChatWorkspace({ session, onSignOut }) {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isDark, setIsDark] = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 760);
   const [historySearch, setHistorySearch] = useState('');
   const endRef = useRef(null);
   const textareaRef = useRef(null);
   const activeRequestRef = useRef(null);
+  const historyLoadedRef = useRef(false);
 
   const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId) ?? conversations[0];
   const activeMessages = activeConversation?.messages ?? [];
@@ -63,6 +64,19 @@ function ChatWorkspace({ session, onSignOut }) {
   }, [activeConversationId, conversations]);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [activeMessages, isLoading]);
   useEffect(() => () => activeRequestRef.current?.abort(), []);
+
+  // Load history from server on mount (once)
+  useEffect(() => {
+    if (historyLoadedRef.current) return;
+    historyLoadedRef.current = true;
+    loadHistoryFromServer().then((merged) => {
+      setConversations(merged);
+      setActiveConversationId((current) => {
+        if (merged.some((c) => c.id === current)) return current;
+        return merged[0]?.id;
+      });
+    });
+  }, []);
 
   function updateConversation(id, updater) {
     setConversations((current) => current.map((conversation) => conversation.id === id ? updater(conversation) : conversation));
@@ -124,7 +138,7 @@ function ChatWorkspace({ session, onSignOut }) {
       const useMockApi = import.meta.env.VITE_USE_MOCK_API === 'true';
       const payload = useMockApi
         ? await new Promise((resolve) => setTimeout(() => resolve(getMockResponse(query)), 650))
-        : await runAnalyticsQuery({ query, conversation_id: conversationId }, { signal: controller.signal });
+        : await API.runQuery({ query, conversation_id: conversationId }, { signal: controller.signal });
       if (controller.signal.aborted) return;
       updateConversation(conversationId, (conversation) => ({
         ...conversation,
@@ -138,7 +152,7 @@ function ChatWorkspace({ session, onSignOut }) {
       }));
     } catch (error) {
       if (controller.signal.aborted) return;
-      const message = error instanceof AnalyticsApiError
+      const message = error instanceof ApiError
         ? error.message
         : 'Your analysis could not be completed. Please try again.';
       updateConversation(conversationId, (conversation) => ({
@@ -157,7 +171,7 @@ function ChatWorkspace({ session, onSignOut }) {
     <div className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? 'sidebar--open' : ''}`}>
         <div className="sidebar-top">
-          <div className="brand"><span className="brand-mark"><Sparkles size={17} /></span><span>queryflow</span><button className="mobile-close icon-button" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar"><X size={18} /></button></div>
+          <div className="brand"><span className="brand-mark"><Sparkles size={17} /></span><span>DataMate</span><button className="mobile-close icon-button" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar"><X size={18} /></button></div>
           <button className="new-chat" onClick={startNewChat}><Plus size={17} /> New chat <kbd><Command size={11} /> K</kbd></button>
           <label className="history-search"><Search size={15} /><input value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} placeholder="Search chats" /></label>
         </div>
@@ -175,8 +189,8 @@ function ChatWorkspace({ session, onSignOut }) {
       </aside>
       {sidebarOpen && <button className="scrim" aria-label="Close menu" onClick={() => setSidebarOpen(false)} />}
 
-      <main className="main-panel">
-        <header className="topbar"><button className="icon-button menu-button" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar"><PanelLeft size={20} /></button><div className="topbar-title"><span>{activeConversation?.title ?? 'New chat'}</span><small>Queryflow analytics</small></div><div className="topbar-actions"><button className="theme-toggle" onClick={() => setIsDark((current) => !current)} aria-label="Toggle color mode">{isDark ? <Sun size={17} /> : <Moon size={17} />}</button><button className="topbar-new" onClick={startNewChat}><CirclePlus size={17} /><span>New chat</span></button></div></header>
+      <main className={`main-panel ${sidebarOpen ? '' : 'main-panel--expanded'}`}>
+        <header className="topbar"><button className="icon-button menu-button" onClick={() => setSidebarOpen(current => !current)} aria-label="Toggle sidebar"><PanelLeft size={20} /></button><div className="topbar-title"><span>{activeConversation?.title ?? 'New chat'}</span><small>DataMate analytics</small></div><div className="topbar-actions"><button className="theme-toggle" onClick={() => setIsDark((current) => !current)} aria-label="Toggle color mode">{isDark ? <Sun size={17} /> : <Moon size={17} />}</button><button className="topbar-new" onClick={startNewChat}><CirclePlus size={17} /><span>New chat</span></button></div></header>
         <div className="chat-scroller"><div className="conversation">
           {activeMessages.map((message, index) => <article className={`message message--${message.role} ${message.isError ? 'message--error' : ''}`} key={message.id}>
             {message.role === 'assistant' && <div className="assistant-avatar"><Sparkles size={15} /></div>}
@@ -188,9 +202,9 @@ function ChatWorkspace({ session, onSignOut }) {
         <div className="composer-wrap"><div className="composer-area">
           {activeMessages.length <= 1 && <div className="welcome-prompts"><p>Try asking about your data</p><div className="suggestions">{suggestions.map((suggestion) => <button key={suggestion} onClick={() => { setInput(suggestion); textareaRef.current?.focus(); }}><Sparkles size={13} />{suggestion}</button>)}</div></div>}
           <form className="composer" onSubmit={handleSubmit}>
-            <textarea ref={textareaRef} value={input} onChange={resizeTextarea} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleSubmit(); } }} placeholder="Message Queryflow…" rows="1" />
+            <textarea ref={textareaRef} value={input} onChange={resizeTextarea} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleSubmit(); } }} placeholder="Message DataMate…" rows="1" />
             <div className="composer-controls"><span>Shift + Enter for new line</span><button className="send-button" type="submit" disabled={!input.trim() || isLoading} aria-label="Send message"><ArrowUp size={19} /></button></div>
-          </form><p className="composer-note">Queryflow can make mistakes. Verify important business decisions.</p>
+          </form><p className="composer-note">DataMate can make mistakes. Verify important business decisions.</p>
         </div></div>
       </main>
     </div>
@@ -198,10 +212,33 @@ function ChatWorkspace({ session, onSignOut }) {
 }
 
 export default function App() {
-  const [session, setSession] = useState(getSession);
+  const [session, setSession] = useState(null);
+  const [checking, setChecking] = useState(true);
+
+  // On mount, verify the stored token against the backend
+  useEffect(() => {
+    const stored = getSession();
+    if (!stored) {
+      setChecking(false);
+      return;
+    }
+    // Optimistically show the app, then verify in background
+    setSession(stored);
+    setChecking(false);
+    verifySession().then((verified) => {
+      if (!verified) {
+        clearSession();
+        setSession(null);
+      } else {
+        setSession(verified);
+      }
+    });
+  }, []);
+
+  if (checking) return null;
 
   if (!session) {
-    return <LoginPage onSignIn={(email) => setSession(createSession(email))} />;
+    return <LoginPage onAuthSuccess={(user) => setSession(user)} />;
   }
 
   return <ChatWorkspace session={session} onSignOut={() => { clearSession(); setSession(null); }} />;

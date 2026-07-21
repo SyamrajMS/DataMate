@@ -2,15 +2,20 @@ import os
 import re
 import uuid
 import sqlite3
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 from contextlib import contextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field, EmailStr
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
+from passlib.context import CryptContext
+from jose import jwt, JWTError
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -21,10 +26,60 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "northwind.db")
 HISTORY_DB_PATH = os.path.join(os.path.dirname(__file__), "history.db")
 SKILLS_PATH = os.path.join(os.path.dirname(__file__), "skills.md")
 
+JWT_SECRET = os.getenv("JWT_SECRET", secrets.token_urlsafe(32))
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRY_DAYS = 7
+
 FORBIDDEN_SQL = re.compile(
     r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|CREATE|PRAGMA|GRANT|REVOKE|REPLACE|ATTACH|DETACH)\b",
     re.IGNORECASE,
 )
+
+# ---------------------------------------------------------------------------
+# Security Utilities
+# ---------------------------------------------------------------------------
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return pwd_context.verify(plain, hashed)
+
+
+def create_access_token(user_id: int, email: str) -> str:
+    payload = {
+        "sub": str(user_id),
+        "email": email,
+        "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRY_DAYS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+async def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+) -> dict:
+    """FastAPI dependency — extracts and validates the JWT from the Authorization header."""
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = int(payload["sub"])
+        email = payload["email"]
+    except (JWTError, KeyError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid or expired token.")
+
+    # Verify user still exists in the database
+    with history_connection() as conn:
+        row = conn.execute("SELECT id, email, name FROM Users WHERE id = ?", (user_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=401, detail="User account not found.")
+
+    return {"id": row["id"], "email": row["email"], "name": row["name"]}
+
 
 # ---------------------------------------------------------------------------
 # Gemini Client
@@ -76,6 +131,24 @@ class ErrorResponse(BaseModel):
     detail: str
 
 
+# --- Auth schemas ---
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    name: str = Field(min_length=1)
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user: dict
+
+
 # ---------------------------------------------------------------------------
 # Database Helpers
 # ---------------------------------------------------------------------------
@@ -103,27 +176,44 @@ def history_connection():
 
 
 def init_history_db():
-    """Creates the history table if it does not exist."""
+    """Creates the users and history tables if they do not exist."""
     with history_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS Users (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                email      TEXT    UNIQUE NOT NULL,
+                name       TEXT    NOT NULL,
+                password   TEXT    NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS QueryHistory (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 request_id    TEXT    NOT NULL,
+                user_id       INTEGER,
                 timestamp     DATETIME DEFAULT CURRENT_TIMESTAMP,
                 user_query    TEXT,
                 generated_sql TEXT,
                 ui_directive  TEXT,
                 message       TEXT,
                 status        TEXT,
-                error_message TEXT DEFAULT ''
+                error_message TEXT DEFAULT '',
+                FOREIGN KEY (user_id) REFERENCES Users(id)
             )
         """)
+        # Migration: add user_id column to existing tables that lack it
+        try:
+            conn.execute("ALTER TABLE QueryHistory ADD COLUMN user_id INTEGER")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         conn.commit()
 
 
 def log_history(
     request_id: str,
     user_query: str,
+    user_id: Optional[int] = None,
     generated_sql: str = "",
     ui_directive: str = "",
     message: str = "",
@@ -134,9 +224,9 @@ def log_history(
         with history_connection() as conn:
             conn.execute(
                 """INSERT INTO QueryHistory
-                   (request_id, user_query, generated_sql, ui_directive, message, status, error_message)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (request_id, user_query, generated_sql, ui_directive, message, status, error_message),
+                   (request_id, user_id, user_query, generated_sql, ui_directive, message, status, error_message)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (request_id, user_id, user_query, generated_sql, ui_directive, message, status, error_message),
             )
             conn.commit()
     except Exception as exc:
@@ -227,9 +317,66 @@ def on_startup():
     init_history_db()
 
 
+# ---------------------------------------------------------------------------
+# Auth Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/api/auth/register", response_model=AuthResponse)
+async def register(body: RegisterRequest):
+    """Create a new user account and return a JWT token."""
+    with history_connection() as conn:
+        existing = conn.execute("SELECT id FROM Users WHERE email = ?", (body.email.lower(),)).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail="An account with this email already exists.")
+
+        hashed = hash_password(body.password)
+        cursor = conn.execute(
+            "INSERT INTO Users (email, name, password) VALUES (?, ?, ?)",
+            (body.email.lower(), body.name.strip(), hashed),
+        )
+        conn.commit()
+        user_id = cursor.lastrowid
+
+    token = create_access_token(user_id, body.email.lower())
+    return AuthResponse(
+        token=token,
+        user={"id": user_id, "email": body.email.lower(), "name": body.name.strip()},
+    )
+
+
+@app.post("/api/auth/login", response_model=AuthResponse)
+async def login(body: LoginRequest):
+    """Authenticate with email + password and return a JWT token."""
+    with history_connection() as conn:
+        row = conn.execute(
+            "SELECT id, email, name, password FROM Users WHERE email = ?",
+            (body.email.lower(),),
+        ).fetchone()
+
+    if row is None or not verify_password(body.password, row["password"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    token = create_access_token(row["id"], row["email"])
+    return AuthResponse(
+        token=token,
+        user={"id": row["id"], "email": row["email"], "name": row["name"]},
+    )
+
+
+@app.get("/api/auth/me")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    """Validate the JWT and return the current user's info."""
+    return {"user": current_user}
+
+
+# ---------------------------------------------------------------------------
+# Analytics Endpoint (protected)
+# ---------------------------------------------------------------------------
+
 @app.post("/api/query", response_model=QueryResponse)
-async def analytics_query(body: QueryRequest):
+async def analytics_query(body: QueryRequest, current_user: dict = Depends(get_current_user)):
     request_id = str(uuid.uuid4())
+    user_id = current_user["id"]
     system_prompt = build_system_prompt()
 
     # ------------------------------------------------------------------
@@ -248,7 +395,7 @@ async def analytics_query(body: QueryRequest):
         )
         directive = AnalyticsDirective.model_validate_json(response.text)
     except Exception as exc:
-        log_history(request_id, body.query, status="ERROR", error_message=f"Gemini error: {exc}")
+        log_history(request_id, body.query, user_id=user_id, status="ERROR", error_message=f"Gemini error: {exc}")
         raise HTTPException(status_code=502, detail=f"AI model error: {exc}")
 
     raw_sql = directive.sql_query
@@ -259,7 +406,7 @@ async def analytics_query(body: QueryRequest):
     try:
         validate_sql(raw_sql)
     except HTTPException as exc:
-        log_history(request_id, body.query, raw_sql, directive.ui_directive, status="ERROR", error_message=exc.detail)
+        log_history(request_id, body.query, user_id=user_id, generated_sql=raw_sql, ui_directive=directive.ui_directive, status="ERROR", error_message=exc.detail)
         raise
 
     # ------------------------------------------------------------------
@@ -268,7 +415,7 @@ async def analytics_query(body: QueryRequest):
     try:
         data = execute_readonly_query(raw_sql)
     except sqlite3.Error as exc:
-        log_history(request_id, body.query, raw_sql, directive.ui_directive, status="ERROR", error_message=str(exc))
+        log_history(request_id, body.query, user_id=user_id, generated_sql=raw_sql, ui_directive=directive.ui_directive, status="ERROR", error_message=str(exc))
         raise HTTPException(status_code=500, detail=f"Database error: {exc}")
 
     # ------------------------------------------------------------------
@@ -277,6 +424,7 @@ async def analytics_query(body: QueryRequest):
     log_history(
         request_id=request_id,
         user_query=body.query,
+        user_id=user_id,
         generated_sql=raw_sql,
         ui_directive=directive.ui_directive,
         message=directive.message,
@@ -293,13 +441,20 @@ async def analytics_query(body: QueryRequest):
     )
 
 
+# ---------------------------------------------------------------------------
+# History Endpoint (protected, scoped to current user)
+# ---------------------------------------------------------------------------
+
 @app.get("/api/history")
-async def get_history(limit: int = 50):
-    """Returns the most recent query history entries (server-side audit log)."""
+async def get_history(limit: int = 50, current_user: dict = Depends(get_current_user)):
+    """Returns the most recent query history entries for the authenticated user."""
     try:
         with history_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM QueryHistory ORDER BY timestamp DESC LIMIT ?", (limit,))
+            cursor.execute(
+                "SELECT * FROM QueryHistory WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+                (current_user["id"], limit),
+            )
             rows = cursor.fetchall()
         return {"history": [dict(row) for row in rows]}
     except Exception as exc:

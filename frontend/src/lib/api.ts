@@ -1,4 +1,5 @@
 import type { AnalyticsResponse, DataRow, DirectivePayload, UIDirective, VisualizationConfig } from '../components/visualizations/types';
+import { getToken } from './auth';
 
 export interface AnalyticsQueryRequest {
   query: string;
@@ -9,10 +10,10 @@ export interface AnalyticsRequestOptions {
   signal?: AbortSignal;
 }
 
-export class AnalyticsApiError extends Error {
+export class ApiError extends Error {
   constructor(message: string, public readonly status?: number) {
     super(message);
-    this.name = 'AnalyticsApiError';
+    this.name = 'ApiError';
   }
 }
 
@@ -49,18 +50,14 @@ function normalizeConfig(value: unknown): VisualizationConfig {
   };
 }
 
-/**
- * Validates the boundary between untrusted network data and the visualization
- * library. It makes malformed backend responses safe to render as errors.
- */
 export function parseAnalyticsResponse(value: unknown): AnalyticsResponse {
   // Supports both a direct response and a common FastAPI wrapper: { payload: {...} }.
   const candidate = isRecord(value) && isRecord(value.payload) ? value.payload : value;
   if (!isRecord(candidate) || !isDirective(candidate.ui_directive)) {
-    throw new AnalyticsApiError('The API response is missing a supported ui_directive.');
+    throw new ApiError('The API response is missing a supported ui_directive.');
   }
   if (!Array.isArray(candidate.data) || !candidate.data.every(isDataRow)) {
-    throw new AnalyticsApiError('The API response must include data as an array of objects.');
+    throw new ApiError('The API response must include data as an array of objects.');
   }
 
   const response: DirectivePayload = {
@@ -77,31 +74,66 @@ export function parseAnalyticsResponse(value: unknown): AnalyticsResponse {
   };
 }
 
-/** Sends a natural-language question to the FastAPI analytics endpoint. */
-export async function runAnalyticsQuery(
-  request: AnalyticsQueryRequest,
-  options: AnalyticsRequestOptions = {},
-): Promise<AnalyticsResponse> {
-  let response: Response;
-  try {
-    response = await fetch(apiUrl, {
-      method: 'POST',
-      cache: 'no-store',
-      signal: options.signal,
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(request),
-    });
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw error;
-    throw new AnalyticsApiError(`Unable to reach the analytics API at ${apiUrl}.`);
-  }
+/** 
+ * Centralized API Client Module 
+ * All interactions with the backend should go through here.
+ */
+export const API = {
+  /** Sends a natural-language question to the FastAPI analytics endpoint. */
+  async runQuery(
+    request: AnalyticsQueryRequest,
+    options: AnalyticsRequestOptions = {},
+  ): Promise<AnalyticsResponse> {
+    let response: Response;
+    const token = getToken();
+    try {
+      response = await fetch(apiUrl, {
+        method: 'POST',
+        cache: 'no-store',
+        signal: options.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(request),
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') throw error;
+      throw new ApiError(`Unable to reach the analytics API at ${apiUrl}.`);
+    }
 
-  const rawBody: unknown = await response.json().catch(() => null);
-  if (!response.ok) {
-    const detail = isRecord(rawBody) && typeof rawBody.detail === 'string' ? rawBody.detail : null;
-    throw new AnalyticsApiError(detail ?? `The analytics API returned HTTP ${response.status}.`, response.status);
-  }
-  return parseAnalyticsResponse(rawBody);
-}
+    const rawBody: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail = isRecord(rawBody) && typeof rawBody.detail === 'string' ? rawBody.detail : null;
+      throw new ApiError(detail ?? `The analytics API returned HTTP ${response.status}.`, response.status);
+    }
+    return parseAnalyticsResponse(rawBody);
+  },
 
-export const analyticsEndpoint = apiUrl;
+  /** Fetches the query history from the backend. */
+  async getHistory(limit: number = 50) {
+    const historyUrl = `${configuredBaseUrl}/api/history?limit=${limit}`;
+    let response: Response;
+    const token = getToken();
+    try {
+      response = await fetch(historyUrl, {
+        method: 'GET',
+        cache: 'no-store',
+        headers: {
+          Accept: 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+    } catch (error) {
+      throw new ApiError(`Unable to reach the history API at ${historyUrl}.`);
+    }
+
+    const rawBody: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail = isRecord(rawBody) && typeof rawBody.detail === 'string' ? rawBody.detail : null;
+      throw new ApiError(detail ?? `The API returned HTTP ${response.status}.`, response.status);
+    }
+    return rawBody;
+  }
+};
