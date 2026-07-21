@@ -2,7 +2,7 @@ const SESSION_KEY = 'datamate-session-v2';
 const TOKEN_KEY = 'datamate-token-v2';
 const USER_KEY = 'datamate-user-v2';
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:50000').replace(/\/$/, '');
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000').replace(/\/$/, '');
 
 // ---------------------------------------------------------------------------
 // Token helpers
