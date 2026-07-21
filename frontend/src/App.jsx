@@ -29,14 +29,13 @@ function MessageActions({ text }) {
   );
 }
 
-function ChatWorkspace({ session, activeConnectionId, onBackToDashboard, onSignOut, apiModel, setApiModel, apiKey, setApiKey }) {
+function ChatWorkspace({ session, activeConnectionId, onBackToDashboard, onSignOut, apiModel, setApiModel, apiKey, setApiKey, isDark, setIsDark }) {
   const initialConversationsRef = useRef(null);
   if (initialConversationsRef.current === null) initialConversationsRef.current = loadConversations();
   const [conversations, setConversations] = useState(initialConversationsRef.current);
   const [activeConversationId, setActiveConversationId] = useState(initialConversationsRef.current[0]?.id);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isDark, setIsDark] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 760);
   const [historySearch, setHistorySearch] = useState('');
   const endRef = useRef(null);
@@ -58,7 +57,6 @@ function ChatWorkspace({ session, activeConnectionId, onBackToDashboard, onSignO
     }, {});
   }, [conversations, historySearch]);
 
-  useEffect(() => { document.documentElement.dataset.theme = isDark ? 'dark' : 'light'; }, [isDark]);
   useEffect(() => { saveConversations(conversations); }, [conversations]);
   useEffect(() => {
     if (!conversations.some((conversation) => conversation.id === activeConversationId)) {
@@ -257,6 +255,12 @@ export default function App() {
   // Need to share API key between sidebar and connect form
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('datamate-api-key') || '');
   const [apiModel, setApiModel] = useState(() => localStorage.getItem('datamate-api-model') || 'gemini-2.5-flash');
+  const [isDark, setIsDark] = useState(() => localStorage.getItem('datamate-theme') === 'dark');
+
+  useEffect(() => { 
+    localStorage.setItem('datamate-theme', isDark ? 'dark' : 'light');
+    document.documentElement.dataset.theme = isDark ? 'dark' : 'light'; 
+  }, [isDark]);
 
   useEffect(() => {
     localStorage.setItem('datamate-api-key', apiKey);
@@ -289,17 +293,29 @@ export default function App() {
   if (checking) return null;
 
   if (!session) {
-    return <LoginPage onAuthSuccess={(user) => setSession(user)} />;
+    return <LoginPage onAuthSuccess={(user) => {
+      if (!document.startViewTransition) { setSession(user); return; }
+      document.startViewTransition(() => setSession(user));
+    }} />;
+  }
+
+  // Smooth transition helper
+  function transitionTo(callback) {
+    if (!document.startViewTransition) {
+      callback();
+      return;
+    }
+    document.startViewTransition(() => callback());
   }
 
   if (currentView === 'connect') {
     return (
       <ConnectDbForm 
-        onCancel={() => setCurrentView('dashboard')} 
-        onSuccess={(conn) => {
+        onCancel={() => transitionTo(() => setCurrentView('dashboard'))} 
+        onSuccess={(conn) => transitionTo(() => {
           setActiveConnectionId(conn.id);
           setCurrentView('chat');
-        }} 
+        })} 
         apiModel={apiModel}
         apiKey={apiKey}
       />
@@ -309,15 +325,15 @@ export default function App() {
   if (currentView === 'dashboard') {
     return (
       <DashboardPage 
-        onConnectNew={() => setCurrentView('connect')}
-        onSelectConnection={(id) => {
+        onConnectNew={() => transitionTo(() => setCurrentView('connect'))}
+        onSelectConnection={(id) => transitionTo(() => {
           setActiveConnectionId(id);
           setCurrentView('chat');
-        }}
-        onSelectDemo={() => {
-          setActiveConnectionId(null); // null = Northwind demo
+        })}
+        onSelectDemo={() => transitionTo(() => {
+          setActiveConnectionId(null);
           setCurrentView('chat');
-        }}
+        })}
       />
     );
   }
@@ -326,12 +342,14 @@ export default function App() {
     <ChatWorkspace 
       session={session} 
       activeConnectionId={activeConnectionId}
-      onBackToDashboard={() => setCurrentView('dashboard')}
-      onSignOut={() => { clearSession(); setSession(null); }} 
+      onBackToDashboard={() => transitionTo(() => setCurrentView('dashboard'))}
+      onSignOut={() => transitionTo(() => { clearSession(); setSession(null); })} 
       apiModel={apiModel}
       setApiModel={setApiModel}
       apiKey={apiKey}
       setApiKey={setApiKey}
+      isDark={isDark}
+      setIsDark={setIsDark}
     />
   );
 }
