@@ -13,6 +13,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, EmailStr
 from google import genai
 from google.genai import types
+from openai import OpenAI
 from dotenv import load_dotenv
 from passlib.context import CryptContext
 from jose import jwt, JWTError
@@ -82,12 +83,7 @@ async def get_current_user(
 
 
 # ---------------------------------------------------------------------------
-# Gemini Client
-# ---------------------------------------------------------------------------
-client = genai.Client()
-
-# ---------------------------------------------------------------------------
-# Pydantic Models — structured output for Gemini
+# Pydantic Models — structured output for LLM
 # ---------------------------------------------------------------------------
 
 class VisualizationConfig(BaseModel):
@@ -98,12 +94,13 @@ class VisualizationConfig(BaseModel):
 
 
 class AnalyticsDirective(BaseModel):
-    sql_query: str = Field(description="A bare, executable SQLite SELECT statement. No markdown.")
+    sql_query: str = Field(default="", description="A bare, executable SQLite SELECT statement. Leave empty for TEXT_REPLY.")
     ui_directive: Literal[
         "TEMPORAL_SERIES",
         "CATEGORICAL_ASSERTION",
         "RELATIONAL_TABLE",
         "METRIC_CARD",
+        "TEXT_REPLY",
     ] = Field(description="The frontend visualization component to render.")
     config: VisualizationConfig = Field(description="Axis & display configuration for the chart.")
     message: str = Field(description="Conversational, plain-English summary of the result for non-technical users.")
@@ -116,6 +113,8 @@ class AnalyticsDirective(BaseModel):
 class QueryRequest(BaseModel):
     query: str
     conversation_id: Optional[str] = None
+    model: str = "gemini-2.5-flash"
+    api_key: Optional[str] = None
 
 
 class QueryResponse(BaseModel):
@@ -193,6 +192,7 @@ def init_history_db():
                 request_id    TEXT    NOT NULL,
                 user_id       INTEGER,
                 timestamp     DATETIME DEFAULT CURRENT_TIMESTAMP,
+                conversation_id TEXT,
                 user_query    TEXT,
                 generated_sql TEXT,
                 ui_directive  TEXT,
@@ -202,9 +202,13 @@ def init_history_db():
                 FOREIGN KEY (user_id) REFERENCES Users(id)
             )
         """)
-        # Migration: add user_id column to existing tables that lack it
+        # Migrations
         try:
             conn.execute("ALTER TABLE QueryHistory ADD COLUMN user_id INTEGER")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        try:
+            conn.execute("ALTER TABLE QueryHistory ADD COLUMN conversation_id TEXT")
         except sqlite3.OperationalError:
             pass  # Column already exists
         conn.commit()
@@ -214,6 +218,7 @@ def log_history(
     request_id: str,
     user_query: str,
     user_id: Optional[int] = None,
+    conversation_id: Optional[str] = None,
     generated_sql: str = "",
     ui_directive: str = "",
     message: str = "",
@@ -224,9 +229,9 @@ def log_history(
         with history_connection() as conn:
             conn.execute(
                 """INSERT INTO QueryHistory
-                   (request_id, user_id, user_query, generated_sql, ui_directive, message, status, error_message)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (request_id, user_id, user_query, generated_sql, ui_directive, message, status, error_message),
+                   (request_id, user_id, conversation_id, user_query, generated_sql, ui_directive, message, status, error_message)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (request_id, user_id, conversation_id, user_query, generated_sql, ui_directive, message, status, error_message),
             )
             conn.commit()
     except Exception as exc:
@@ -265,9 +270,10 @@ ABSOLUTE RULES — VIOLATION WILL CAUSE SYSTEM FAILURE:
 6. The config.xAxis and config.yAxis values MUST exactly match column alias names in your SELECT clause.
 7. For TEMPORAL_SERIES and CATEGORICAL_ASSERTION, both config.xAxis and config.yAxis are MANDATORY.
 8. For METRIC_CARD, use config.yAxis pointing to the value key and set config.metricLabel to a human-readable name.
-9. The message field must be a friendly, conversational summary written for someone who does not know SQL.
-10. LIMIT results to 50 rows max for RELATIONAL_TABLE queries to avoid overwhelming the UI.
-11. Always ROUND numeric aggregations to 2 decimal places.
+9. For conversational replies, refusals to modify data, or when data is unavailable, use the "TEXT_REPLY" directive and leave sql_query empty.
+10. The message field must be a friendly, conversational summary written for someone who does not know SQL.
+11. LIMIT results to 50 rows max for RELATIONAL_TABLE queries to avoid overwhelming the UI.
+12. Always ROUND numeric aggregations to 2 decimal places.
 
 {schema_context}
 """
@@ -379,44 +385,62 @@ async def analytics_query(body: QueryRequest, current_user: dict = Depends(get_c
     user_id = current_user["id"]
     system_prompt = build_system_prompt()
 
+    if not body.api_key:
+        raise HTTPException(status_code=401, detail="API key is required.")
+
     # ------------------------------------------------------------------
-    # Step 1: Ask Gemini to produce a structured AnalyticsDirective
+    # Step 1: Ask the selected LLM to produce a structured AnalyticsDirective
     # ------------------------------------------------------------------
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=body.query,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                response_mime_type="application/json",
-                response_schema=AnalyticsDirective,
+        if body.model.startswith("gpt"):
+            # Use OpenAI Structured Outputs
+            client = OpenAI(api_key=body.api_key)
+            response = client.beta.chat.completions.parse(
+                model=body.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": body.query}
+                ],
+                response_format=AnalyticsDirective,
                 temperature=0.1,
-            ),
-        )
-        directive = AnalyticsDirective.model_validate_json(response.text)
+            )
+            directive = response.choices[0].message.parsed
+        else:
+            # Use Gemini Structured Outputs
+            client = genai.Client(api_key=body.api_key)
+            response = client.models.generate_content(
+                model=body.model,
+                contents=body.query,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    response_mime_type="application/json",
+                    response_schema=AnalyticsDirective,
+                    temperature=0.1,
+                ),
+            )
+            directive = AnalyticsDirective.model_validate_json(response.text)
     except Exception as exc:
-        log_history(request_id, body.query, user_id=user_id, status="ERROR", error_message=f"Gemini error: {exc}")
+        log_history(request_id, body.query, user_id=user_id, conversation_id=body.conversation_id, status="ERROR", error_message=f"LLM error: {exc}")
         raise HTTPException(status_code=502, detail=f"AI model error: {exc}")
 
     raw_sql = directive.sql_query
 
+    data = []
     # ------------------------------------------------------------------
-    # Step 2: Security validation
+    # Step 2 & 3: Validate and Execute SQL (skip if TEXT_REPLY)
     # ------------------------------------------------------------------
-    try:
-        validate_sql(raw_sql)
-    except HTTPException as exc:
-        log_history(request_id, body.query, user_id=user_id, generated_sql=raw_sql, ui_directive=directive.ui_directive, status="ERROR", error_message=exc.detail)
-        raise
+    if directive.ui_directive != "TEXT_REPLY" and raw_sql:
+        try:
+            validate_sql(raw_sql)
+        except HTTPException as exc:
+            log_history(request_id, body.query, user_id=user_id, conversation_id=body.conversation_id, generated_sql=raw_sql, ui_directive=directive.ui_directive, status="ERROR", error_message=exc.detail)
+            raise
 
-    # ------------------------------------------------------------------
-    # Step 3: Execute the query against northwind.db (read-only)
-    # ------------------------------------------------------------------
-    try:
-        data = execute_readonly_query(raw_sql)
-    except sqlite3.Error as exc:
-        log_history(request_id, body.query, user_id=user_id, generated_sql=raw_sql, ui_directive=directive.ui_directive, status="ERROR", error_message=str(exc))
-        raise HTTPException(status_code=500, detail=f"Database error: {exc}")
+        try:
+            data = execute_readonly_query(raw_sql)
+        except sqlite3.Error as exc:
+            log_history(request_id, body.query, user_id=user_id, conversation_id=body.conversation_id, generated_sql=raw_sql, ui_directive=directive.ui_directive, status="ERROR", error_message=str(exc))
+            raise HTTPException(status_code=500, detail=f"Database error: {exc}")
 
     # ------------------------------------------------------------------
     # Step 4: Log & return the structured response
@@ -425,6 +449,7 @@ async def analytics_query(body: QueryRequest, current_user: dict = Depends(get_c
         request_id=request_id,
         user_query=body.query,
         user_id=user_id,
+        conversation_id=body.conversation_id,
         generated_sql=raw_sql,
         ui_directive=directive.ui_directive,
         message=directive.message,
