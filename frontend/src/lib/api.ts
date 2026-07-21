@@ -6,6 +6,7 @@ export interface AnalyticsQueryRequest {
   conversation_id?: string;
   model?: string;
   api_key?: string;
+  connection_id?: number;
 }
 
 export interface AnalyticsRequestOptions {
@@ -138,5 +139,61 @@ export const API = {
       throw new ApiError(detail ?? `The API returned HTTP ${response.status}.`, response.status);
     }
     return rawBody;
+  },
+
+  async getConnections() {
+    const url = `${configuredBaseUrl}/api/connections`;
+    const token = getToken();
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    if (!response.ok) {
+      const rawBody = await response.json().catch(() => null);
+      const detail = isRecord(rawBody) && typeof rawBody.detail === 'string' ? rawBody.detail : null;
+      throw new ApiError(detail ?? `Failed to fetch connections (HTTP ${response.status}).`, response.status);
+    }
+    return response.json();
+  },
+
+  async createConnection(body: any) {
+    const url = `${configuredBaseUrl}/api/connections`;
+    const token = getToken();
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const rawBody = await response.json().catch(() => null);
+      const detail = isRecord(rawBody) && typeof rawBody.detail === 'string' ? rawBody.detail : null;
+      throw new ApiError(detail ?? `Failed to create connection (HTTP ${response.status}).`, response.status);
+    }
+    return response.json();
+  },
+
+  async deleteConnection(id: number) {
+    const url = `${configuredBaseUrl}/api/connections/${id}`;
+    const token = getToken();
+    const response = await fetch(url, {
+      method: 'DELETE',
+      headers: {
+        Accept: 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    if (!response.ok) {
+      const rawBody = await response.json().catch(() => null);
+      const detail = isRecord(rawBody) && typeof rawBody.detail === 'string' ? rawBody.detail : null;
+      throw new ApiError(detail ?? `Failed to delete connection (HTTP ${response.status}).`, response.status);
+    }
+    return response.json();
   }
 };

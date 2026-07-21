@@ -4,6 +4,7 @@ import uuid
 import sqlite3
 import secrets
 from datetime import datetime, timedelta, timezone
+import base64
 from typing import Literal, Optional
 from contextlib import contextmanager
 
@@ -17,6 +18,9 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from passlib.context import CryptContext
 from jose import jwt, JWTError
+from cryptography.fernet import Fernet
+
+from db_introspection import introspect_db, execute_custom_query
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -30,6 +34,10 @@ SKILLS_PATH = os.path.join(os.path.dirname(__file__), "skills.md")
 JWT_SECRET = os.getenv("JWT_SECRET", secrets.token_urlsafe(32))
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_DAYS = 7
+
+# Derive a 32-byte url-safe base64 key from JWT_SECRET for Fernet encryption
+fernet_key = base64.urlsafe_b64encode(JWT_SECRET.encode("utf-8")[:32].ljust(32, b"="))
+fernet = Fernet(fernet_key)
 
 FORBIDDEN_SQL = re.compile(
     r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|CREATE|PRAGMA|GRANT|REVOKE|REPLACE|ATTACH|DETACH)\b",
@@ -115,6 +123,7 @@ class QueryRequest(BaseModel):
     conversation_id: Optional[str] = None
     model: str = "gemini-2.5-flash"
     api_key: Optional[str] = None
+    connection_id: Optional[int] = None
 
 
 class QueryResponse(BaseModel):
@@ -146,6 +155,29 @@ class LoginRequest(BaseModel):
 class AuthResponse(BaseModel):
     token: str
     user: dict
+
+# --- Connection schemas ---
+
+class ConnectRequest(BaseModel):
+    connection_name: str = Field(min_length=1)
+    db_type: str = Field(pattern="^(postgresql|mysql)$")
+    host: str = Field(min_length=1)
+    port: int
+    db_name: str = Field(min_length=1)
+    username: str
+    password: str
+    model: str = "gemini-2.5-flash"
+    api_key: str
+
+class ConnectionResponse(BaseModel):
+    id: int
+    connection_name: str
+    db_type: str
+    host: str
+    port: int
+    db_name: str
+    created_at: str
+    last_used_at: str
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +243,24 @@ def init_history_db():
             conn.execute("ALTER TABLE QueryHistory ADD COLUMN conversation_id TEXT")
         except sqlite3.OperationalError:
             pass  # Column already exists
+            
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS UserConnections (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id         INTEGER NOT NULL,
+                connection_name TEXT NOT NULL,
+                db_type         TEXT NOT NULL,
+                host            TEXT NOT NULL,
+                port            INTEGER NOT NULL,
+                db_name         TEXT NOT NULL,
+                username        TEXT NOT NULL,
+                password_enc    TEXT NOT NULL,
+                skills_md       TEXT,
+                created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_used_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES Users(id)
+            )
+        """)
         conn.commit()
 
 
@@ -251,20 +301,23 @@ def execute_readonly_query(sql: str) -> list[dict]:
 # System Prompt Builder
 # ---------------------------------------------------------------------------
 
-def build_system_prompt() -> str:
-    """Reads skills.md and wraps it with strict instructions."""
-    try:
-        with open(SKILLS_PATH, "r", encoding="utf-8") as f:
-            schema_context = f.read()
-    except FileNotFoundError:
-        schema_context = "[ERROR] skills.md not found — schema context unavailable."
+def build_system_prompt(custom_schema: Optional[str] = None, dialect: str = "SQLite") -> str:
+    """Reads skills.md (or custom schema) and wraps it with strict instructions."""
+    if custom_schema:
+        schema_context = custom_schema
+    else:
+        try:
+            with open(SKILLS_PATH, "r", encoding="utf-8") as f:
+                schema_context = f.read()
+        except FileNotFoundError:
+            schema_context = "[ERROR] skills.md not found — schema context unavailable."
 
-    return f"""You are a precise Natural Language to SQL analytics engine for a Northwind e-commerce database.
+    return f"""You are a precise Natural Language to SQL analytics engine.
 
 ABSOLUTE RULES — VIOLATION WILL CAUSE SYSTEM FAILURE:
 1. ONLY use tables and columns defined in the schema below. NEVER invent or guess column names.
-2. The table "Order Details" contains a space — ALWAYS wrap it in double quotes.
-3. Your sql_query MUST be a pure, executable SQLite SELECT statement. No markdown fences, no comments.
+2. The table "Order Details" contains a space — ALWAYS wrap it in double quotes (only if using Northwind demo).
+3. Your sql_query MUST be a pure, executable {dialect} SELECT statement. No markdown fences, no comments.
 4. NEVER generate queries that modify data (no INSERT, UPDATE, DELETE, DROP, ALTER, CREATE).
 5. Use lowercase_snake_case for all column aliases so they exactly match the config.xAxis and config.yAxis values.
 6. The config.xAxis and config.yAxis values MUST exactly match column alias names in your SELECT clause.
@@ -383,7 +436,24 @@ async def get_me(current_user: dict = Depends(get_current_user)):
 async def analytics_query(body: QueryRequest, current_user: dict = Depends(get_current_user)):
     request_id = str(uuid.uuid4())
     user_id = current_user["id"]
-    system_prompt = build_system_prompt()
+    
+    custom_db = None
+    if body.connection_id:
+        with history_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM UserConnections WHERE id = ? AND user_id = ?",
+                (body.connection_id, user_id)
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        custom_db = dict(row)
+        system_prompt = build_system_prompt(custom_db["skills_md"], custom_db["db_type"])
+        # Update last used
+        with history_connection() as conn:
+            conn.execute("UPDATE UserConnections SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?", (body.connection_id,))
+            conn.commit()
+    else:
+        system_prompt = build_system_prompt()
 
     if not body.api_key:
         raise HTTPException(status_code=401, detail="API key is required.")
@@ -437,8 +507,20 @@ async def analytics_query(body: QueryRequest, current_user: dict = Depends(get_c
             raise
 
         try:
-            data = execute_readonly_query(raw_sql)
-        except sqlite3.Error as exc:
+            if custom_db:
+                password = fernet.decrypt(custom_db["password_enc"].encode()).decode()
+                data = execute_custom_query(
+                    custom_db["db_type"], 
+                    custom_db["host"], 
+                    custom_db["port"], 
+                    custom_db["db_name"], 
+                    custom_db["username"], 
+                    password, 
+                    raw_sql
+                )
+            else:
+                data = execute_readonly_query(raw_sql)
+        except Exception as exc:
             log_history(request_id, body.query, user_id=user_id, conversation_id=body.conversation_id, generated_sql=raw_sql, ui_directive=directive.ui_directive, status="ERROR", error_message=str(exc))
             raise HTTPException(status_code=500, detail=f"Database error: {exc}")
 
@@ -485,6 +567,100 @@ async def get_history(limit: int = 50, current_user: dict = Depends(get_current_
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"History fetch error: {exc}")
 
+
+# ---------------------------------------------------------------------------
+# Connection Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/connections", response_model=list[ConnectionResponse])
+async def get_connections(current_user: dict = Depends(get_current_user)):
+    """List all saved connections for the user."""
+    with history_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, connection_name, db_type, host, port, db_name, created_at, last_used_at FROM UserConnections WHERE user_id = ? ORDER BY last_used_at DESC",
+            (current_user["id"],)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+@app.post("/api/connections", response_model=ConnectionResponse)
+async def create_connection(body: ConnectRequest, current_user: dict = Depends(get_current_user)):
+    """Validates DB, introspects schema, asks LLM for skills.md, and saves it securely."""
+    # 1. Introspect Schema
+    try:
+        raw_schema = introspect_db(body.db_type, body.host, body.port, body.db_name, body.username, body.password)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to connect to database: {exc}")
+
+    # 2. Generate skills.md using LLM
+    try:
+        with open(SKILLS_PATH, "r", encoding="utf-8") as f:
+            demo_skills = f.read()
+    except FileNotFoundError:
+        demo_skills = ""
+
+    prompt = f"""
+You are an expert Data Engineer. I have extracted the raw database schema below. 
+Please generate a comprehensive `skills.md` document for this database, following EXACTLY the same format and sections as the example Northwind `skills.md` provided below.
+
+### RAW EXTRACTED SCHEMA:
+{raw_schema}
+
+### EXAMPLE FORMAT TO FOLLOW:
+{demo_skills}
+
+Generate ONLY the final markdown document. Do not add any introductory or concluding text.
+    """
+
+    try:
+        if body.model.startswith("gpt"):
+            client = OpenAI(api_key=body.api_key)
+            response = client.chat.completions.create(
+                model=body.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1
+            )
+            skills_md = response.choices[0].message.content
+        else:
+            client = genai.Client(api_key=body.api_key)
+            response = client.models.generate_content(
+                model=body.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(temperature=0.1)
+            )
+            skills_md = response.text
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to generate skills documentation: {exc}")
+
+    # 3. Encrypt password and save
+    password_enc = fernet.encrypt(body.password.encode()).decode()
+    with history_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO UserConnections 
+               (user_id, connection_name, db_type, host, port, db_name, username, password_enc, skills_md)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (current_user["id"], body.connection_name, body.db_type, body.host, body.port, body.db_name, body.username, password_enc, skills_md)
+        )
+        conn.commit()
+        new_id = cursor.lastrowid
+        
+        cursor.execute(
+            "SELECT id, connection_name, db_type, host, port, db_name, created_at, last_used_at FROM UserConnections WHERE id = ?",
+            (new_id,)
+        )
+        row = cursor.fetchone()
+    return dict(row)
+
+@app.delete("/api/connections/{conn_id}")
+async def delete_connection(conn_id: int, current_user: dict = Depends(get_current_user)):
+    with history_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM UserConnections WHERE id = ? AND user_id = ?", (conn_id, current_user["id"]))
+        conn.commit()
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Connection not found")
+    return {"status": "success"}
 
 # ---------------------------------------------------------------------------
 # Entrypoint

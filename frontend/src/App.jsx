@@ -10,6 +10,8 @@ import { ApiError, API } from './lib/api';
 import { createConversation, loadConversations, loadHistoryFromServer, relativeGroup, saveConversations, titleFromQuery } from './lib/chatHistory';
 import { clearSession, getSession, verifySession } from './lib/auth';
 import LoginPage from './components/LoginPage';
+import DashboardPage from './components/DashboardPage';
+import ConnectDbForm from './components/ConnectDbForm';
 
 function MessageActions({ text }) {
   const [copied, setCopied] = useState(false);
@@ -27,7 +29,7 @@ function MessageActions({ text }) {
   );
 }
 
-function ChatWorkspace({ session, onSignOut }) {
+function ChatWorkspace({ session, activeConnectionId, onBackToDashboard, onSignOut, apiModel, setApiModel, apiKey, setApiKey }) {
   const initialConversationsRef = useRef(null);
   if (initialConversationsRef.current === null) initialConversationsRef.current = loadConversations();
   const [conversations, setConversations] = useState(initialConversationsRef.current);
@@ -42,12 +44,6 @@ function ChatWorkspace({ session, onSignOut }) {
   const activeRequestRef = useRef(null);
   const historyLoadedRef = useRef(false);
   const [isTestMode, setIsTestMode] = useState(false);
-
-  const [apiModel, setApiModel] = useState(() => localStorage.getItem('datamate_apiModel') ?? 'gemini-2.5-flash');
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('datamate_apiKey') ?? '');
-
-  useEffect(() => { localStorage.setItem('datamate_apiModel', apiModel); }, [apiModel]);
-  useEffect(() => { localStorage.setItem('datamate_apiKey', apiKey); }, [apiKey]);
 
   const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId) ?? conversations[0];
   const activeMessages = activeConversation?.messages ?? [];
@@ -145,7 +141,13 @@ function ChatWorkspace({ session, onSignOut }) {
       const useMockApi = import.meta.env.VITE_USE_MOCK_API === 'true';
       const payload = useMockApi
         ? await new Promise((resolve) => setTimeout(() => resolve(getMockResponse(query)), 650))
-        : await API.runQuery({ query, conversation_id: conversationId, model: apiModel, api_key: apiKey }, { signal: controller.signal });
+        : await API.runQuery({
+            query: input.trim(),
+            conversation_id: conversationId,
+            model: apiModel,
+            api_key: apiKey,
+            connection_id: activeConnectionId || undefined
+          }, { signal: controller.signal });
       if (controller.signal.aborted) return;
       updateConversation(conversationId, (conversation) => ({
         ...conversation,
@@ -207,7 +209,15 @@ function ChatWorkspace({ session, onSignOut }) {
       {sidebarOpen && <button className="scrim" aria-label="Close menu" onClick={() => setSidebarOpen(false)} />}
 
       <main className={`main-panel ${sidebarOpen ? '' : 'main-panel--expanded'}`}>
-        <header className="topbar"><button className="icon-button menu-button" onClick={() => setSidebarOpen(current => !current)} aria-label="Toggle sidebar"><PanelLeft size={20} /></button><div className="topbar-title"><span>{activeConversation?.title ?? 'New chat'}</span><small>DataMate analytics</small></div><div className="topbar-actions"><button className="theme-toggle" onClick={() => setIsDark((current) => !current)} aria-label="Toggle color mode">{isDark ? <Sun size={17} /> : <Moon size={17} />}</button><button className="topbar-new" onClick={startNewChat}><CirclePlus size={17} /><span>New chat</span></button></div></header>
+        <header className="topbar">
+          <button className="icon-button menu-button" onClick={() => setSidebarOpen(current => !current)} aria-label="Toggle sidebar"><PanelLeft size={20} /></button>
+          <div className="topbar-title"><span>{activeConversation?.title ?? 'New chat'}</span><small>DataMate analytics</small></div>
+          <div className="topbar-actions">
+            <button className="theme-toggle" onClick={onBackToDashboard} title="Back to Dashboard" aria-label="Back to Dashboard"><Database size={16} /></button>
+            <button className="theme-toggle" onClick={() => setIsDark((current) => !current)} aria-label="Toggle color mode">{isDark ? <Sun size={17} /> : <Moon size={17} />}</button>
+            <button className="topbar-new" onClick={startNewChat}><CirclePlus size={17} /><span>New chat</span></button>
+          </div>
+        </header>
         <div className="chat-scroller"><div className="conversation">
           {activeMessages.map((message, index) => <article className={`message message--${message.role} ${message.isError ? 'message--error' : ''}`} key={message.id}>
             {message.role === 'assistant' && <div className="assistant-avatar"><Sparkles size={15} /></div>}
@@ -231,6 +241,21 @@ function ChatWorkspace({ session, onSignOut }) {
 export default function App() {
   const [session, setSession] = useState(null);
   const [checking, setChecking] = useState(true);
+  
+  const [currentView, setCurrentView] = useState('dashboard'); // 'dashboard' | 'connect' | 'chat'
+  const [activeConnectionId, setActiveConnectionId] = useState(null);
+  
+  // Need to share API key between sidebar and connect form
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('datamate-api-key') || '');
+  const [apiModel, setApiModel] = useState(() => localStorage.getItem('datamate-api-model') || 'gemini-2.5-flash');
+
+  useEffect(() => {
+    localStorage.setItem('datamate-api-key', apiKey);
+  }, [apiKey]);
+  
+  useEffect(() => {
+    localStorage.setItem('datamate-api-model', apiModel);
+  }, [apiModel]);
 
   // On mount, verify the stored token against the backend
   useEffect(() => {
@@ -258,5 +283,46 @@ export default function App() {
     return <LoginPage onAuthSuccess={(user) => setSession(user)} />;
   }
 
-  return <ChatWorkspace session={session} onSignOut={() => { clearSession(); setSession(null); }} />;
+  if (currentView === 'connect') {
+    return (
+      <ConnectDbForm 
+        onCancel={() => setCurrentView('dashboard')} 
+        onSuccess={(conn) => {
+          setActiveConnectionId(conn.id);
+          setCurrentView('chat');
+        }} 
+        apiModel={apiModel}
+        apiKey={apiKey}
+      />
+    );
+  }
+
+  if (currentView === 'dashboard') {
+    return (
+      <DashboardPage 
+        onConnectNew={() => setCurrentView('connect')}
+        onSelectConnection={(id) => {
+          setActiveConnectionId(id);
+          setCurrentView('chat');
+        }}
+        onSelectDemo={() => {
+          setActiveConnectionId(null); // null = Northwind demo
+          setCurrentView('chat');
+        }}
+      />
+    );
+  }
+
+  return (
+    <ChatWorkspace 
+      session={session} 
+      activeConnectionId={activeConnectionId}
+      onBackToDashboard={() => setCurrentView('dashboard')}
+      onSignOut={() => { clearSession(); setSession(null); }} 
+      apiModel={apiModel}
+      setApiModel={setApiModel}
+      apiKey={apiKey}
+      setApiKey={setApiKey}
+    />
+  );
 }
