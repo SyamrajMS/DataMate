@@ -63,56 +63,72 @@ export async function loadHistoryFromServer() {
     const history = result?.history ?? [];
     if (!history.length) return loadConversations();
 
-    // Build a Set of existing request_ids already in local storage to avoid duplicates
     const local = loadConversations();
     const localRequestIds = new Set();
+    const localConversationsMap = new Map();
     for (const conversation of local) {
+      localConversationsMap.set(conversation.id, conversation);
       for (const message of conversation.messages) {
         if (message.payload?.request_id) localRequestIds.add(message.payload.request_id);
       }
     }
 
-    const serverConversations = [];
+    // Group history rows by conversation_id (fallback to request_id for legacy rows)
+    const serverGroups = new Map();
     for (const entry of history) {
       if (localRequestIds.has(entry.request_id)) continue;
-
-      const timestamp = entry.timestamp ?? new Date().toISOString();
-      const title = titleFromQuery(entry.user_query ?? 'Query');
-      const conversation = {
-        id: entry.request_id ?? crypto.randomUUID(),
-        title,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        messages: [
-          { ...welcomeMessage, id: crypto.randomUUID() },
-          { id: crypto.randomUUID(), role: 'user', text: entry.user_query ?? '' },
-        ],
-      };
-
-      // If there's a successful response, add it as an assistant message
-      if (entry.status === 'SUCCESS' && entry.message) {
-        conversation.messages.push({
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          text: entry.message,
-          payload: entry.ui_directive ? {
-            ui_directive: entry.ui_directive,
-            message: entry.message,
-            sql: entry.generated_sql,
-            request_id: entry.request_id,
-          } : undefined,
-        });
-      }
-
-      serverConversations.push(conversation);
+      const convId = entry.conversation_id || entry.request_id;
+      if (!serverGroups.has(convId)) serverGroups.set(convId, []);
+      serverGroups.get(convId).push(entry);
     }
 
-    // Merge: local conversations first (they have full payloads), then server-only
+    const serverConversations = [];
+    for (const [convId, entries] of serverGroups.entries()) {
+      // Sort chronologically (oldest to newest)
+      entries.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+      const firstEntry = entries[0];
+      const timestamp = firstEntry.timestamp ?? new Date().toISOString();
+      const title = titleFromQuery(firstEntry.user_query ?? 'Query');
+
+      let conversation = localConversationsMap.get(convId);
+      if (!conversation) {
+        conversation = {
+          id: convId,
+          title,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          messages: [{ ...welcomeMessage, id: crypto.randomUUID() }],
+        };
+        serverConversations.push(conversation);
+      } else {
+        const lastTime = new Date(entries[entries.length - 1].timestamp).getTime();
+        if (lastTime > new Date(conversation.updatedAt).getTime()) {
+           conversation.updatedAt = entries[entries.length - 1].timestamp;
+        }
+      }
+
+      for (const entry of entries) {
+        conversation.messages.push({ id: crypto.randomUUID(), role: 'user', text: entry.user_query ?? '' });
+        if (entry.status === 'SUCCESS' && entry.message) {
+          conversation.messages.push({
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            text: entry.message,
+            payload: entry.ui_directive ? {
+              ui_directive: entry.ui_directive,
+              message: entry.message,
+              sql: entry.generated_sql,
+              request_id: entry.request_id,
+            } : undefined,
+          });
+        }
+      }
+    }
+
     const merged = [...local, ...serverConversations];
-    // Sort by most recently updated
     merged.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 
-    // Ensure at least one conversation exists
     if (!merged.length) merged.push(createConversation());
 
     saveConversations(merged);

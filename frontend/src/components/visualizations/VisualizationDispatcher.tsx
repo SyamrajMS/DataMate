@@ -12,6 +12,7 @@ export default function VisualizationDispatcher({ payload }: { payload: Directiv
     case 'CATEGORICAL_ASSERTION': return <CategoricalChart payload={payload} />;
     case 'RELATIONAL_TABLE': return <RelationalTable payload={payload} />;
     case 'METRIC_CARD': return <MetricCard payload={payload} />;
+    case 'TEXT_REPLY': return null;
     default: return <VisualizationCard><EmptyState message="The API returned an unsupported UI directive." /></VisualizationCard>;
   }
 }

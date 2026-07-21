@@ -4,6 +4,8 @@ import { getToken } from './auth';
 export interface AnalyticsQueryRequest {
   query: string;
   conversation_id?: string;
+  model?: string;
+  api_key?: string;
 }
 
 export interface AnalyticsRequestOptions {
@@ -22,6 +24,7 @@ const directiveValues: UIDirective[] = [
   'CATEGORICAL_ASSERTION',
   'RELATIONAL_TABLE',
   'METRIC_CARD',
+  'TEXT_REPLY',
 ];
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://localhost:8000';

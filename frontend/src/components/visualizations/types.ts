@@ -30,7 +30,8 @@ export type UIDirective =
   | 'TEMPORAL_SERIES'
   | 'CATEGORICAL_ASSERTION'
   | 'RELATIONAL_TABLE'
-  | 'METRIC_CARD';
+  | 'METRIC_CARD'
+  | 'TEXT_REPLY';
 
 export interface DirectivePayload extends APIPayload {
   ui_directive: UIDirective;

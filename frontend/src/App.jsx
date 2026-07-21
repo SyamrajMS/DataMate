@@ -42,6 +42,12 @@ function ChatWorkspace({ session, onSignOut }) {
   const activeRequestRef = useRef(null);
   const historyLoadedRef = useRef(false);
 
+  const [apiModel, setApiModel] = useState(() => localStorage.getItem('datamate_apiModel') ?? 'gemini-2.5-flash');
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('datamate_apiKey') ?? '');
+
+  useEffect(() => { localStorage.setItem('datamate_apiModel', apiModel); }, [apiModel]);
+  useEffect(() => { localStorage.setItem('datamate_apiKey', apiKey); }, [apiKey]);
+
   const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId) ?? conversations[0];
   const activeMessages = activeConversation?.messages ?? [];
   const groupedConversations = useMemo(() => {
@@ -138,7 +144,7 @@ function ChatWorkspace({ session, onSignOut }) {
       const useMockApi = import.meta.env.VITE_USE_MOCK_API === 'true';
       const payload = useMockApi
         ? await new Promise((resolve) => setTimeout(() => resolve(getMockResponse(query)), 650))
-        : await API.runQuery({ query, conversation_id: conversationId }, { signal: controller.signal });
+        : await API.runQuery({ query, conversation_id: conversationId, model: apiModel, api_key: apiKey }, { signal: controller.signal });
       if (controller.signal.aborted) return;
       updateConversation(conversationId, (conversation) => ({
         ...conversation,
@@ -185,7 +191,17 @@ function ChatWorkspace({ session, onSignOut }) {
           ) : null)}
           {!Object.keys(groupedConversations).length && <p className="history-empty">No chats found</p>}
         </nav>
-        <div className="sidebar-footer"><button className="data-source"><span><Database size={15} /></span><div><strong>Production warehouse</strong><small>Connected · 2 min ago</small></div><ChevronDown size={15} /></button><button className="user" onClick={onSignOut} title="Sign out"><div className="avatar">{session.name.slice(0, 2).toUpperCase()}</div><div><strong>{session.name}</strong><small>Click to sign out</small></div><ChevronDown size={15} /></button></div>
+        <div className="sidebar-footer">
+          <div className="api-config">
+            <select value={apiModel} onChange={(e) => setApiModel(e.target.value)}>
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+              <option value="gpt-4o">ChatGPT (GPT-4o)</option>
+              <option value="gpt-4o-mini">ChatGPT (GPT-4o-mini)</option>
+            </select>
+            <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Paste your API key" />
+          </div>
+          <button className="user" onClick={onSignOut} title="Sign out"><div className="avatar">{session.name.slice(0, 2).toUpperCase()}</div><div><strong>{session.name}</strong><small>Click to sign out</small></div><ChevronDown size={15} /></button>
+        </div>
       </aside>
       {sidebarOpen && <button className="scrim" aria-label="Close menu" onClick={() => setSidebarOpen(false)} />}
 
