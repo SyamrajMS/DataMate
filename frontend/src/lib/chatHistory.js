@@ -15,7 +15,7 @@ export function createConversation() {
     title: 'New chat',
     createdAt: timestamp,
     updatedAt: timestamp,
-    messages: [{ ...welcomeMessage, id: crypto.randomUUID() }],
+    messages: [],
   };
 }
 
