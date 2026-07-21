@@ -34,13 +34,14 @@ function ChatWorkspace({ session, onSignOut }) {
   const [activeConversationId, setActiveConversationId] = useState(initialConversationsRef.current[0]?.id);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isDark, setIsDark] = useState(true);
+  const [isDark, setIsDark] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 760);
   const [historySearch, setHistorySearch] = useState('');
   const endRef = useRef(null);
   const textareaRef = useRef(null);
   const activeRequestRef = useRef(null);
   const historyLoadedRef = useRef(false);
+  const [isTestMode, setIsTestMode] = useState(false);
 
   const [apiModel, setApiModel] = useState(() => localStorage.getItem('datamate_apiModel') ?? 'gemini-2.5-flash');
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('datamate_apiKey') ?? '');
@@ -220,7 +221,7 @@ function ChatWorkspace({ session, onSignOut }) {
           <form className="composer" onSubmit={handleSubmit}>
             <textarea ref={textareaRef} value={input} onChange={resizeTextarea} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleSubmit(); } }} placeholder="Message DataMate…" rows="1" />
             <div className="composer-controls"><span>Shift + Enter for new line</span><button className="send-button" type="submit" disabled={!input.trim() || isLoading} aria-label="Send message"><ArrowUp size={19} /></button></div>
-          </form><p className="composer-note">DataMate can make mistakes. Verify important business decisions.</p>
+          </form>
         </div></div>
       </main>
     </div>
