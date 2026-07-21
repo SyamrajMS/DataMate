@@ -199,16 +199,25 @@ function ChatWorkspace({ session, onSignOut }) {
 
       <main className={`main-panel ${sidebarOpen ? '' : 'main-panel--expanded'}`}>
         <header className="topbar"><button className="icon-button menu-button" onClick={() => setSidebarOpen(current => !current)} aria-label="Toggle sidebar"><PanelLeft size={20} /></button><div className="topbar-title"><span>{activeConversation?.title ?? 'New chat'}</span><small>DataMate analytics</small></div><div className="topbar-actions"><button className="theme-toggle" onClick={() => setIsDark((current) => !current)} aria-label="Toggle color mode">{isDark ? <Sun size={17} /> : <Moon size={17} />}</button><button className="topbar-new" onClick={startNewChat}><CirclePlus size={17} /><span>New chat</span></button></div></header>
-        <div className="chat-scroller"><div className="conversation">
-          {activeMessages.map((message, index) => <article className={`message message--${message.role} ${message.isError ? 'message--error' : ''}`} key={message.id}>
-            {message.role === 'assistant' && <div className="assistant-avatar"><Sparkles size={15} /></div>}
-            <div className="message-content"><p>{message.text}</p>{message.payload && <UIDispatcher payload={message.payload} />}{message.role === 'assistant' && index > 0 && <MessageActions text={message.text} />}</div>
-          </article>)}
-          {isLoading && <article className="message message--assistant"><div className="assistant-avatar"><Sparkles size={15} /></div><LoadingState /></article>}
-          <div ref={endRef} />
-        </div></div>
+        <div className="chat-scroller">
+          {activeMessages.length === 0 || (activeMessages.length === 1 && activeMessages[0].id === 'welcome') ? (
+            <div className="empty-state-welcome">
+              <h1>Welcome to DataMate, {session.name.split(' ')[0]}!</h1>
+              <p>I'm your AI analytics assistant. How can I help you explore your data today?</p>
+            </div>
+          ) : (
+            <div className="conversation">
+              {activeMessages.map((message, index) => <article className={`message message--${message.role} ${message.isError ? 'message--error' : ''}`} key={message.id}>
+                {message.role === 'assistant' && <div className="assistant-avatar"><Sparkles size={15} /></div>}
+                <div className="message-content"><p>{message.text}</p>{message.payload && <UIDispatcher payload={message.payload} />}{message.role === 'assistant' && index > 0 && <MessageActions text={message.text} />}</div>
+              </article>)}
+              {isLoading && <article className="message message--assistant"><div className="assistant-avatar"><Sparkles size={15} /></div><LoadingState /></article>}
+              <div ref={endRef} />
+            </div>
+          )}
+        </div>
         <div className="composer-wrap"><div className="composer-area">
-          {activeMessages.length <= 1 && <div className="welcome-prompts"><p>Try asking about your data</p><div className="suggestions">{suggestions.map((suggestion) => <button key={suggestion} onClick={() => { setInput(suggestion); textareaRef.current?.focus(); }}><Sparkles size={13} />{suggestion}</button>)}</div></div>}
+          {(activeMessages.length === 0 || (activeMessages.length === 1 && activeMessages[0].id === 'welcome')) && <div className="welcome-prompts"><p>Try asking about your data</p><div className="suggestions">{suggestions.map((suggestion) => <button key={suggestion} onClick={() => { setInput(suggestion); textareaRef.current?.focus(); }}><Sparkles size={13} />{suggestion}</button>)}</div></div>}
           <form className="composer" onSubmit={handleSubmit}>
             <textarea ref={textareaRef} value={input} onChange={resizeTextarea} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleSubmit(); } }} placeholder="Message DataMate…" rows="1" />
             <div className="composer-controls"><span>Shift + Enter for new line</span><button className="send-button" type="submit" disabled={!input.trim() || isLoading} aria-label="Send message"><ArrowUp size={19} /></button></div>

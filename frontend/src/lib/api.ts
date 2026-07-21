@@ -24,7 +24,7 @@ const directiveValues: UIDirective[] = [
   'METRIC_CARD',
 ];
 
-const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://localhost:8000';
+const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ?? 'http://localhost:50000';
 const configuredPath = import.meta.env.VITE_ANALYTICS_ENDPOINT ?? '/api/query';
 const apiUrl = `${configuredBaseUrl}${configuredPath.startsWith('/') ? configuredPath : `/${configuredPath}`}`;
 

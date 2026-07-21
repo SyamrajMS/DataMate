@@ -15,7 +15,7 @@ export function createConversation() {
     title: 'New chat',
     createdAt: timestamp,
     updatedAt: timestamp,
-    messages: [{ ...welcomeMessage, id: crypto.randomUUID() }],
+    messages: [],
   };
 }
 
@@ -84,7 +84,6 @@ export async function loadHistoryFromServer() {
         createdAt: timestamp,
         updatedAt: timestamp,
         messages: [
-          { ...welcomeMessage, id: crypto.randomUUID() },
           { id: crypto.randomUUID(), role: 'user', text: entry.user_query ?? '' },
         ],
       };
