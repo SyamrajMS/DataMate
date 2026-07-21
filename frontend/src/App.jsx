@@ -34,13 +34,14 @@ function ChatWorkspace({ session, onSignOut }) {
   const [activeConversationId, setActiveConversationId] = useState(initialConversationsRef.current[0]?.id);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isDark, setIsDark] = useState(true);
+  const [isDark, setIsDark] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 760);
   const [historySearch, setHistorySearch] = useState('');
   const endRef = useRef(null);
   const textareaRef = useRef(null);
   const activeRequestRef = useRef(null);
   const historyLoadedRef = useRef(false);
+  const [isTestMode, setIsTestMode] = useState(false);
 
   const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId) ?? conversations[0];
   const activeMessages = activeConversation?.messages ?? [];
@@ -185,7 +186,14 @@ function ChatWorkspace({ session, onSignOut }) {
           ) : null)}
           {!Object.keys(groupedConversations).length && <p className="history-empty">No chats found</p>}
         </nav>
-        <div className="sidebar-footer"><button className="data-source"><span><Database size={15} /></span><div><strong>Production warehouse</strong><small>Connected · 2 min ago</small></div><ChevronDown size={15} /></button><button className="user" onClick={onSignOut} title="Sign out"><div className="avatar">{session.name.slice(0, 2).toUpperCase()}</div><div><strong>{session.name}</strong><small>Click to sign out</small></div><ChevronDown size={15} /></button></div>
+        <div className="sidebar-footer">
+          <button className="data-source" onClick={() => setIsTestMode(!isTestMode)}>
+            <span><Sparkles size={15} /></span>
+            <div><strong>{isTestMode ? 'Your own database' : 'Northwind database'}</strong><small>Click to switch connection</small></div>
+          </button>
+          <button className="data-source"><span><Database size={15} /></span><div><strong>Production warehouse</strong><small>Connected · 2 min ago</small></div><ChevronDown size={15} /></button>
+          <button className="user" onClick={onSignOut} title="Sign out"><div className="avatar">{session.name.slice(0, 2).toUpperCase()}</div><div><strong>{session.name}</strong><small>Click to sign out</small></div><ChevronDown size={15} /></button>
+        </div>
       </aside>
       {sidebarOpen && <button className="scrim" aria-label="Close menu" onClick={() => setSidebarOpen(false)} />}
 
@@ -204,7 +212,7 @@ function ChatWorkspace({ session, onSignOut }) {
           <form className="composer" onSubmit={handleSubmit}>
             <textarea ref={textareaRef} value={input} onChange={resizeTextarea} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleSubmit(); } }} placeholder="Message DataMate…" rows="1" />
             <div className="composer-controls"><span>Shift + Enter for new line</span><button className="send-button" type="submit" disabled={!input.trim() || isLoading} aria-label="Send message"><ArrowUp size={19} /></button></div>
-          </form><p className="composer-note">DataMate can make mistakes. Verify important business decisions.</p>
+          </form>
         </div></div>
       </main>
     </div>
