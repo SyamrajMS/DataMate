@@ -5,7 +5,7 @@ google-genai
 pydantic[email]
 openai
 passlib
-bcrypt
+bcrypt==3.2.2
 python-jose
 cryptography
 psycopg2-binary
