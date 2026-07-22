@@ -10,6 +10,8 @@ from contextlib import contextmanager
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, EmailStr
 from google import genai
@@ -661,6 +663,19 @@ async def delete_connection(conn_id: int, current_user: dict = Depends(get_curre
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Connection not found")
     return {"status": "success"}
+
+# ---------------------------------------------------------------------------
+# Serve Frontend
+# ---------------------------------------------------------------------------
+frontend_dist = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist')
+if os.path.isdir(frontend_dist):
+    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
+
+    @app.get("/{catchall:path}")
+    def serve_frontend(catchall: str):
+        if catchall.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API route not found")
+        return FileResponse(os.path.join(frontend_dist, "index.html"))
 
 # ---------------------------------------------------------------------------
 # Entrypoint
